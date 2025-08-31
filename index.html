@@ -150,490 +150,495 @@
         import { getAuth, signInAnonymously, signInWithCustomToken } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
         import { getFirestore, doc, getDoc, setDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
-        // Global variables provided by the Canvas environment.
-        const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
-        const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {};
-        const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
+        window.onload = function() {
+            // Global variables provided by the Canvas environment.
+            const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+            const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {};
+            const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
 
-        // --- Firebase Initialization and Auth ---
-        const app = initializeApp(firebaseConfig);
-        const db = getFirestore(app);
-        const auth = getAuth(app);
-        let userId = null;
+            // --- Firebase Initialization and Auth ---
+            const app = initializeApp(firebaseConfig);
+            const db = getFirestore(app);
+            const auth = getAuth(app);
+            let userId = null;
 
-        async function initFirebaseAndAuth() {
-            try {
-                if (initialAuthToken) {
-                    await signInWithCustomToken(auth, initialAuthToken);
+            async function initFirebaseAndAuth() {
+                try {
+                    if (initialAuthToken) {
+                        await signInWithCustomToken(auth, initialAuthToken);
+                    } else {
+                        await signInAnonymously(auth);
+                    }
+                    userId = auth.currentUser?.uid || 'anonymous';
+                    console.log("Firebase initialized and user signed in. User ID:", userId);
+                } catch (error) {
+                    console.error("Firebase auth failed:", error);
+                }
+            }
+            initFirebaseAndAuth();
+
+            // --- Core Application Logic ---
+            let constraints = [];
+            let studentsWithHeightMap = {};
+            let currentSeatingPlan = {};
+
+            function setStatusMessage(message, type = 'info') {
+                const statusMessage = document.getElementById('status-message');
+                statusMessage.textContent = message;
+                if (type === 'success') {
+                    statusMessage.className = 'mt-4 text-center font-semibold text-green-500';
+                } else if (type === 'error') {
+                    statusMessage.className = 'mt-4 text-center font-semibold text-red-500';
                 } else {
-                    await signInAnonymously(auth);
+                    statusMessage.className = 'mt-4 text-center font-semibold text-gray-700';
                 }
-                userId = auth.currentUser?.uid || 'anonymous';
-                console.log("Firebase initialized and user signed in. User ID:", userId);
-            } catch (error) {
-                console.error("Firebase auth failed:", error);
-            }
-        }
-        initFirebaseAndAuth();
-
-        // --- Core Application Logic ---
-        let constraints = [];
-        let classroom = [];
-        let studentsWithHeightMap = {};
-
-        function setStatusMessage(message, type = 'info') {
-            const statusMessage = document.getElementById('status-message');
-            statusMessage.textContent = message;
-            if (type === 'success') {
-                statusMessage.className = 'mt-4 text-center font-semibold text-green-500';
-            } else if (type === 'error') {
-                statusMessage.className = 'mt-4 text-center font-semibold text-red-500';
-            } else {
-                statusMessage.className = 'mt-4 text-center font-semibold text-gray-700';
-            }
-        }
-        
-        function addConstraint(type) {
-            const constraintsList = document.getElementById('constraints-list');
-            let students, text;
-
-            if (type === 'not_adjacent') {
-                students = document.getElementById('not-adjacent').value.split(',').map(s => s.trim()).filter(s => s);
-                if (students.length !== 2) {
-                    setStatusMessage('不相鄰限制需要輸入兩位學生，用逗號分隔。', 'error');
-                    return;
-                }
-                text = `${students[0]} 和 ${students[1]} 不能坐在一起`;
-            } else if (type === 'preferred_rows') {
-                const student = document.getElementById('preferred-rows-student').value.trim();
-                const range = document.getElementById('preferred-rows-range').value.trim().split('-').map(Number);
-                if (!student || range.length !== 2 || isNaN(range[0]) || isNaN(range[1])) {
-                    setStatusMessage('指定排數限制需要學生姓名和有效的排數範圍 (例如: 1-2)。', 'error');
-                    return;
-                }
-                students = [student, range.join('-')];
-                text = `${student} 需要坐在第 ${range[0]} 到 ${range[1]} 排`;
-            } else if (type === 'different_groups') {
-                students = document.getElementById('different-groups').value.split(',').map(s => s.trim()).filter(s => s);
-                if (students.length < 2) {
-                    setStatusMessage('不同組限制需要輸入至少兩位學生，用逗號分隔。', 'error');
-                    return;
-                }
-                text = `${students.join(', ')} 需要被分到不同組`;
-            }
-
-            constraints.push({ type, students, text });
-            
-            const li = document.createElement('li');
-            li.textContent = text;
-            constraintsList.appendChild(li);
-
-            // Clear inputs
-            document.getElementById('not-adjacent').value = '';
-            document.getElementById('preferred-rows-student').value = '';
-            document.getElementById('preferred-rows-range').value = '';
-            document.getElementById('different-groups').value = '';
-            setStatusMessage('限制已新增。', 'info');
-        }
-
-        function parseStudentData() {
-            const studentsInput = document.getElementById('students-data').value.split('\n').map(s => s.trim()).filter(s => s.length > 0);
-            
-            const studentsList = [];
-            studentsWithHeightMap = {};
-            studentsInput.forEach(line => {
-                const parts = line.split(':').map(p => p.trim());
-                if (parts.length === 2) {
-                    studentsList.push(parts[0]);
-                    studentsWithHeightMap[parts[0]] = parseInt(parts[1], 10);
-                } else if (parts.length === 1 && parts[0] !== '') {
-                    studentsList.push(parts[0]);
-                }
-            });
-            return studentsList;
-        }
-
-        function generateSeatingPlan() {
-            const students = parseStudentData();
-            const layoutType = document.getElementById('layout-type').value;
-
-            let planData;
-            let numRows, numCols, numGroups, groupSize;
-
-            if (layoutType === 'single_row') {
-                numRows = parseInt(document.getElementById('rows').value, 10);
-                numCols = parseInt(document.getElementById('cols').value, 10);
-                if (students.length > numRows * numCols) {
-                    setStatusMessage(`座位不足！學生人數(${students.length})超過座位總數(${numRows * numCols})。`, 'error');
-                    return;
-                }
-                planData = Array(numRows).fill(null).map(() => Array(numCols).fill(null));
-            } else if (layoutType === 'group') {
-                numGroups = parseInt(document.getElementById('num-groups').value, 10);
-                groupSize = parseInt(document.getElementById('group-size').value, 10);
-                if (students.length > numGroups * groupSize) {
-                    setStatusMessage(`座位不足！學生人數(${students.length})超過座位總數(${numGroups * groupSize})。`, 'error');
-                    return;
-                }
-                planData = Array(numGroups).fill(null).map(() => []);
             }
             
-            if (students.length === 0 || (isNaN(numRows) && isNaN(numGroups)) || (numRows <= 0 && numGroups <= 0)) {
-                setStatusMessage('請輸入有效的學生名單和教室大小。', 'error');
-                return;
+            function addConstraint(type) {
+                const constraintsList = document.getElementById('constraints-list');
+                let students, text;
+
+                if (type === 'not_adjacent') {
+                    students = document.getElementById('not-adjacent').value.split(',').map(s => s.trim()).filter(s => s);
+                    if (students.length !== 2) {
+                        setStatusMessage('不相鄰限制需要輸入兩位學生，用逗號分隔。', 'error');
+                        return;
+                    }
+                    text = `${students[0]} 和 ${students[1]} 不能坐在一起`;
+                } else if (type === 'preferred_rows') {
+                    const student = document.getElementById('preferred-rows-student').value.trim();
+                    const range = document.getElementById('preferred-rows-range').value.trim().split('-').map(Number);
+                    if (!student || range.length !== 2 || isNaN(range[0]) || isNaN(range[1])) {
+                        setStatusMessage('指定排數限制需要學生姓名和有效的排數範圍 (例如: 1-2)。', 'error');
+                        return;
+                    }
+                    students = [student, range.join('-')];
+                    text = `${student} 需要坐在第 ${range[0]} 到 ${range[1]} 排`;
+                } else if (type === 'different_groups') {
+                    students = document.getElementById('different-groups').value.split(',').map(s => s.trim()).filter(s => s);
+                    if (students.length < 2) {
+                        setStatusMessage('不同組限制需要輸入至少兩位學生，用逗號分隔。', 'error');
+                        return;
+                    }
+                    text = `${students.join(', ')} 需要被分到不同組`;
+                } else {
+                    return;
+                }
+
+                constraints.push({ type, students, text });
+                
+                const li = document.createElement('li');
+                li.textContent = text;
+                constraintsList.appendChild(li);
+
+                // Clear inputs
+                document.getElementById('not-adjacent').value = '';
+                document.getElementById('preferred-rows-student').value = '';
+                document.getElementById('preferred-rows-range').value = '';
+                document.getElementById('different-groups').value = '';
+                setStatusMessage('限制已新增。', 'info');
             }
 
-            const shuffledStudents = [...students].sort(() => Math.random() - 0.5); // 隨機打亂學生順序
+            function parseStudentData() {
+                const studentsInput = document.getElementById('students-data').value.split('\n').map(s => s.trim()).filter(s => s.length > 0);
+                
+                const studentsList = [];
+                studentsWithHeightMap = {};
+                studentsInput.forEach(line => {
+                    const parts = line.split(':').map(p => p.trim());
+                    if (parts.length === 2) {
+                        studentsList.push(parts[0]);
+                        studentsWithHeightMap[parts[0]] = parseInt(parts[1], 10);
+                    } else if (parts.length === 1 && parts[0] !== '') {
+                        studentsList.push(parts[0]);
+                    }
+                });
+                return studentsList;
+            }
 
-            if (layoutType === 'single_row') {
-                const solveSingleRow = (studentIndex) => {
-                    if (studentIndex === shuffledStudents.length) return true;
-                    const currentStudent = shuffledStudents[studentIndex];
-                    for (let r = 0; r < numRows; r++) {
-                        for (let c = 0; c < numCols; c++) {
-                            if (planData[r][c] === null) {
-                                if (isPlacementValid(currentStudent, r, c, planData, 'single_row')) {
-                                    planData[r][c] = currentStudent;
-                                    if (solveSingleRow(studentIndex + 1)) return true;
-                                    planData[r][c] = null;
+            function generateSeatingPlan() {
+                const students = parseStudentData();
+                const layoutType = document.getElementById('layout-type').value;
+
+                let planData;
+                let numRows, numCols, numGroups, groupSize;
+
+                if (layoutType === 'single_row') {
+                    numRows = parseInt(document.getElementById('rows').value, 10);
+                    numCols = parseInt(document.getElementById('cols').value, 10);
+                    if (students.length > numRows * numCols) {
+                        setStatusMessage(`座位不足！學生人數(${students.length})超過座位總數(${numRows * numCols})。`, 'error');
+                        return;
+                    }
+                    planData = Array(numRows).fill(null).map(() => Array(numCols).fill(null));
+                } else if (layoutType === 'group') {
+                    numGroups = parseInt(document.getElementById('num-groups').value, 10);
+                    groupSize = parseInt(document.getElementById('group-size').value, 10);
+                    if (students.length > numGroups * groupSize) {
+                        setStatusMessage(`座位不足！學生人數(${students.length})超過座位總數(${numGroups * groupSize})。`, 'error');
+                        return;
+                    }
+                    planData = Array(numGroups).fill(null).map(() => []);
+                }
+                
+                if (students.length === 0 || (isNaN(numRows) && isNaN(numGroups)) || (numRows <= 0 && numGroups <= 0)) {
+                    setStatusMessage('請輸入有效的學生名單和教室大小。', 'error');
+                    return;
+                }
+
+                const shuffledStudents = [...students].sort(() => Math.random() - 0.5); // 隨機打亂學生順序
+
+                if (layoutType === 'single_row') {
+                    const solveSingleRow = (studentIndex) => {
+                        if (studentIndex === shuffledStudents.length) return true;
+                        const currentStudent = shuffledStudents[studentIndex];
+                        for (let r = 0; r < numRows; r++) {
+                            for (let c = 0; c < numCols; c++) {
+                                if (planData[r][c] === null) {
+                                    if (isPlacementValid(currentStudent, r, c, planData, 'single_row')) {
+                                        planData[r][c] = currentStudent;
+                                        if (solveSingleRow(studentIndex + 1)) return true;
+                                        planData[r][c] = null;
+                                    }
+                                }
+                            }
+                        }
+                        return false;
+                    };
+                    if (solveSingleRow(0)) {
+                        currentSeatingPlan = { students: students, plan: planData, layout: layoutType, numRows: numRows, numCols: numCols };
+                        setStatusMessage('座位表成功生成！', 'success');
+                        displaySeatingPlan(planData, numRows, numCols, 'single_row');
+                    } else {
+                        setStatusMessage('無法在限制條件下找到合適的座位安排。請調整限制或增加座位數。', 'error');
+                        displaySeatingPlan(null, numRows, numCols, 'single_row');
+                    }
+                } else if (layoutType === 'group') {
+                    const solveGroupSeating = (studentIndex) => {
+                        if (studentIndex === shuffledStudents.length) {
+                            return true;
+                        }
+                        const currentStudent = shuffledStudents[studentIndex];
+                    
+                        // 根據目前小組人數對小組索引進行排序，以實現平均分配
+                        const groupIndices = Array.from({ length: numGroups }, (_, i) => i);
+                        groupIndices.sort((a, b) => planData[a].length - planData[b].length);
+                    
+                        for (const g of groupIndices) {
+                            if (planData[g].length < groupSize) {
+                                if (isPlacementValid(currentStudent, g, null, planData, 'group')) {
+                                    planData[g].push(currentStudent);
+                                    if (solveGroupSeating(studentIndex + 1)) {
+                                        return true;
+                                    }
+                                    planData[g].pop(); // Backtrack
+                                }
+                            }
+                        }
+                        return false;
+                    };
+
+                    if (solveGroupSeating(0)) {
+                        currentSeatingPlan = { students: students, plan: planData, layout: layoutType, numGroups: numGroups, groupSize: groupSize };
+                        setStatusMessage('座位表成功生成！', 'success');
+                        displaySeatingPlan(planData, numGroups, groupSize, 'group');
+                    } else {
+                        setStatusMessage('無法在限制條件下找到合適的座位安排。請調整限制或增加座位數。', 'error');
+                        displaySeatingPlan(null, numGroups, groupSize, 'group');
+                    }
+                }
+            }
+
+            // 檢查某個學生在某個位置是否符合所有限制
+            function isPlacementValid(student, r, c, grid, layoutType) {
+                // Check height constraint (only for single_row)
+                const heightConstraintEnabled = document.getElementById('height-constraint-enabled').checked;
+                if (heightConstraintEnabled && layoutType === 'single_row') {
+                    if (r > 0) {
+                        const studentInFront = grid[r - 1][c];
+                        if (studentInFront) {
+                            const currentStudentHeight = studentsWithHeightMap[student] || 0;
+                            const studentInFrontHeight = studentsWithHeightMap[studentInFront] || 0;
+                            if (currentStudentHeight > studentInFrontHeight) {
+                                return false; // Higher student is behind a shorter one
+                            }
+                        }
+                    }
+                }
+                
+                if (layoutType === 'single_row') {
+                    // Check not adjacent constraint for single_row
+                    const placedStudents = grid.flat().filter(s => s);
+                    for (const placedStudent of placedStudents) {
+                        const placedPos = findStudentPos(placedStudent, grid, 'single_row');
+                        if (placedPos) {
+                            const placedR = placedPos.r;
+                            const placedC = placedPos.c;
+                            const adjacentConstraint = constraints.find(cons => 
+                                cons.type === 'not_adjacent' && 
+                                ((cons.students[0] === student && cons.students[1] === placedStudent) || (cons.students[1] === student && cons.students[0] === placedStudent))
+                            );
+                            if (adjacentConstraint) {
+                                if (Math.abs(r - placedR) <= 1 && Math.abs(c - placedC) <= 1) {
+                                    return false;
                                 }
                             }
                         }
                     }
-                    return false;
-                };
-                if (solveSingleRow(0)) {
-                    setStatusMessage('座位表成功生成！', 'success');
-                    displaySeatingPlan(planData, numRows, numCols, 'single_row');
-                } else {
-                    setStatusMessage('無法在限制條件下找到合適的座位安排。請調整限制或增加座位數。', 'error');
-                    displaySeatingPlan(null, numRows, numCols, 'single_row');
-                }
-            } else if (layoutType === 'group') {
-                const solveGroupSeating = (studentIndex) => {
-                    if (studentIndex === shuffledStudents.length) {
-                        return true;
-                    }
-                    const currentStudent = shuffledStudents[studentIndex];
-                
-                    // 根據目前小組人數對小組索引進行排序，以實現平均分配
-                    const groupIndices = Array.from({ length: numGroups }, (_, i) => i);
-                    groupIndices.sort((a, b) => planData[a].length - planData[b].length);
-                
-                    for (const g of groupIndices) {
-                        if (planData[g].length < groupSize) {
-                            if (isPlacementValid(currentStudent, g, null, planData, 'group')) {
-                                planData[g].push(currentStudent);
-                                if (solveGroupSeating(studentIndex + 1)) {
-                                    return true;
-                                }
-                                planData[g].pop(); // Backtrack
-                            }
-                        }
-                    }
-                    return false;
-                };
-
-                if (solveGroupSeating(0)) {
-                    setStatusMessage('座位表成功生成！', 'success');
-                    displaySeatingPlan(planData, numGroups, groupSize, 'group');
-                } else {
-                    setStatusMessage('無法在限制條件下找到合適的座位安排。請調整限制或增加座位數。', 'error');
-                    displaySeatingPlan(null, numGroups, groupSize, 'group');
-                }
-            }
-        }
-
-        // 檢查某個學生在某個位置是否符合所有限制
-        function isPlacementValid(student, r, c, grid, layoutType) {
-            // Check height constraint (only for single_row)
-            const heightConstraintEnabled = document.getElementById('height-constraint-enabled').checked;
-            if (heightConstraintEnabled && layoutType === 'single_row') {
-                // Check student behind
-                if (r > 0) {
-                    const studentInFront = grid[r - 1][c];
-                    if (studentInFront) {
-                        const currentStudentHeight = studentsWithHeightMap[student] || 0;
-                        const studentInFrontHeight = studentsWithHeightMap[studentInFront] || 0;
-                        if (currentStudentHeight < studentInFrontHeight) {
-                            return false; // Higher student is behind a shorter one
-                        }
-                    }
-                }
-            }
-            
-            if (layoutType === 'single_row') {
-                // Check not adjacent constraint for single_row
-                const placedStudents = grid.flat().filter(s => s);
-                for (const placedStudent of placedStudents) {
-                    const placedPos = findStudentPos(placedStudent, grid, 'single_row');
-                    if (placedPos) {
-                        const placedR = placedPos.r;
-                        const placedC = placedPos.c;
-                        const adjacentConstraint = constraints.find(cons => 
-                            cons.type === 'not_adjacent' && 
-                            ((cons.students[0] === student && cons.students[1] === placedStudent) || (cons.students[1] === student && cons.students[0] === placedStudent))
-                        );
-                        if (adjacentConstraint) {
-                            if (Math.abs(r - placedR) <= 1 && Math.abs(c - placedC) <= 1) {
-                                return false;
-                            }
-                        }
-                    }
-                }
-            } else if (layoutType === 'group') {
-                // Check not adjacent constraint for group layout
-                const currentGroup = grid[r];
-                const notAdjacentConstraint = constraints.find(cons => 
-                    cons.type === 'not_adjacent' && 
-                    ((cons.students[0] === student && currentGroup.includes(cons.students[1])) || (cons.students[1] === student && currentGroup.includes(cons.students[0])))
-                );
-                if (notAdjacentConstraint) {
-                    return false; // Cannot place them in the same group
-                }
-
-                // Check different groups constraint for group layout
-                const differentGroupsConstraint = constraints.find(cons => cons.type === 'different_groups');
-                if (differentGroupsConstraint && differentGroupsConstraint.students.includes(student)) {
+                } else if (layoutType === 'group') {
+                    // Check not adjacent constraint for group layout
                     const currentGroup = grid[r];
-                    for (const placedStudent of currentGroup) {
-                        if (differentGroupsConstraint.students.includes(placedStudent)) {
-                            return false; // Found a placed student from the same "different groups" list. Invalid.
+                    const notAdjacentConstraint = constraints.find(cons => 
+                        cons.type === 'not_adjacent' && 
+                        ((cons.students[0] === student && currentGroup.includes(cons.students[1])) || (cons.students[1] === student && currentGroup.includes(cons.students[0])))
+                    );
+                    if (notAdjacentConstraint) {
+                        return false; // Cannot place them in the same group
+                    }
+
+                    // Check different groups constraint for group layout
+                    const differentGroupsConstraint = constraints.find(cons => cons.type === 'different_groups');
+                    if (differentGroupsConstraint && differentGroupsConstraint.students.includes(student)) {
+                        const currentGroup = grid[r];
+                        for (const placedStudent of currentGroup) {
+                            if (differentGroupsConstraint.students.includes(placedStudent)) {
+                                return false; // Found a placed student from the same "different groups" list. Invalid.
+                            }
                         }
                     }
                 }
-            }
-            
-            const preferredRowsConstraint = constraints.find(cons => 
-                cons.type === 'preferred_rows' && cons.students[0] === student
-            );
-            if (preferredRowsConstraint) {
-                const range = preferredRowsConstraint.students[1].split('-').map(Number);
-                const startRow = range[0] - 1;
-                const endRow = range[1] - 1;
-                if (r < startRow || r > endRow) {
-                    return false;
-                }
-            }
-            return true;
-        }
-
-        function findStudentPos(studentName, grid, layoutType) {
-            if (layoutType === 'single_row') {
-                for (let r = 0; r < grid.length; r++) {
-                    for (let c = 0; c < grid[0].length; c++) {
-                        if (grid[r][c] === studentName) {
-                            return { r, c };
-                        }
-                    }
-                }
-            } else if (layoutType === 'group') {
-                for (let r = 0; r < grid.length; r++) {
-                    if (grid[r].includes(studentName)) {
-                        return { r, c: null };
-                    }
-                }
-            }
-            return null;
-        }
-
-
-        function displaySeatingPlan(classroomData, numRowsOrGroups, numColsOrGroupSize, layoutType) {
-            const container = document.getElementById('seating-plan');
-            container.innerHTML = '';
-            
-            if (!classroomData) {
-                return;
-            }
-
-            if (layoutType === 'single_row') {
-                const table = document.createElement('table');
-                table.className = 'border-collapse w-full rounded-lg overflow-hidden shadow-lg';
-                for (let r = 0; r < numRowsOrGroups; r++) {
-                    const tr = document.createElement('tr');
-                    for (let c = 0; c < numColsOrGroupSize; c++) {
-                        const td = document.createElement('td');
-                        td.className = 'border border-gray-300 p-4 text-center h-24 w-24 md:h-28 md:w-28 bg-gray-50';
-                        const studentName = classroomData[r][c];
-                        if (studentName) {
-                            td.textContent = studentName;
-                            td.className += ' bg-blue-200 text-blue-800 font-bold text-xl rounded-lg shadow-md transition transform hover:scale-105';
-                        } else {
-                            td.className += ' text-gray-400 text-xl';
-                            td.textContent = '空位';
-                        }
-                        tr.appendChild(td);
-                    }
-                    table.appendChild(tr);
-                }
-                container.appendChild(table);
-            } else if (layoutType === 'group') {
-                const gridDiv = document.createElement('div');
-                gridDiv.className = 'flex flex-wrap justify-center items-start gap-8';
                 
-                for (let g = 0; g < numRowsOrGroups; g++) {
-                    const group = classroomData[g];
-                    if (group) {
-                        const groupDiv = document.createElement('div');
-                        groupDiv.className = 'group-table bg-white shadow-xl';
-                        const groupTable = document.createElement('table');
-                        groupTable.className = 'border-collapse';
-                        
-                        const groupLayout = [];
-                        let seats = [...group];
-                        while(seats.length > 0) {
-                            groupLayout.push(seats.splice(0, 2));
-                        }
-
-                        groupLayout.forEach(row => {
-                            const tr = document.createElement('tr');
-                            row.forEach(studentName => {
-                                const td = document.createElement('td');
-                                td.innerHTML = `<div class="seat bg-blue-200 text-blue-800 font-bold">${studentName || ''}</div>`;
-                                tr.appendChild(td);
-                            });
-                            groupTable.appendChild(tr);
-                        });
-                        
-                        groupDiv.appendChild(groupTable);
-                        gridDiv.appendChild(groupDiv);
+                const preferredRowsConstraint = constraints.find(cons => 
+                    cons.type === 'preferred_rows' && cons.students[0] === student
+                );
+                if (preferredRowsConstraint) {
+                    const range = preferredRowsConstraint.students[1].split('-').map(Number);
+                    const startRow = range[0] - 1;
+                    const endRow = range[1] - 1;
+                    if (r < startRow || r > endRow) {
+                        return false;
                     }
                 }
-                container.appendChild(gridDiv);
-            }
-        }
-
-        // --- Firebase Save/Load Functions ---
-        async function savePlan() {
-            const planName = document.getElementById('plan-name').value.trim();
-            if (!planName) {
-                setStatusMessage('請輸入一個座位表名稱。', 'error');
-                return;
+                return true;
             }
 
-            if (!userId) {
-                setStatusMessage('正在初始化，請稍後再試。', 'info');
-                return;
-            }
-
-            const studentsDataInput = document.getElementById('students-data').value;
-            const layoutType = document.getElementById('layout-type').value;
-            
-            const planData = {
-                studentsData: studentsDataInput,
-                layoutType: layoutType,
-                constraints: constraints,
-                heightConstraintEnabled: document.getElementById('height-constraint-enabled').checked
-            };
-
-            if (layoutType === 'single_row') {
-                planData.rows = parseInt(document.getElementById('rows').value, 10);
-                planData.cols = parseInt(document.getElementById('cols').value, 10);
-            } else if (layoutType === 'group') {
-                planData.numGroups = parseInt(document.getElementById('num-groups').value, 10);
-                planData.groupSize = parseInt(document.getElementById('group-size').value, 10);
-            }
-
-            try {
-                // Use a public path for shared access
-                const planDocRef = doc(db, `artifacts/${appId}/public/data/seating-plans`, planName);
-                await setDoc(planDocRef, planData);
-                setStatusMessage(`座位表 "${planName}" 已成功儲存！`, 'success');
-            } catch (e) {
-                console.error("Error saving document: ", e);
-                setStatusMessage("儲存失敗，請檢查網路連線。", 'error');
-            }
-        }
-
-        async function loadPlan() {
-            const planName = document.getElementById('plan-name').value.trim();
-            if (!planName) {
-                setStatusMessage('請輸入一個座位表名稱來載入。', 'error');
-                return;
-            }
-
-            if (!userId) {
-                setStatusMessage('正在初始化，請稍後再試。', 'info');
-                return;
-            }
-
-            try {
-                const planDocRef = doc(db, `artifacts/${appId}/public/data/seating-plans`, planName);
-                const docSnap = await getDoc(planDocRef);
-
-                if (docSnap.exists()) {
-                    const planData = docSnap.data();
-                    
-                    document.getElementById('students-data').value = planData.studentsData || '';
-                    document.getElementById('layout-type').value = planData.layoutType || 'single_row';
-                    
-                    document.getElementById('height-constraint-enabled').checked = planData.heightConstraintEnabled || false;
-                    
-                    if (planData.layoutType === 'single_row') {
-                        document.getElementById('rows').value = planData.rows;
-                        document.getElementById('cols').value = planData.cols;
-                    } else if (planData.layoutType === 'group') {
-                        document.getElementById('num-groups').value = planData.numGroups;
-                        document.getElementById('group-size').value = planData.groupSize;
+            function findStudentPos(studentName, grid, layoutType) {
+                if (layoutType === 'single_row') {
+                    for (let r = 0; r < grid.length; r++) {
+                        for (let c = 0; c < grid[0].length; c++) {
+                            if (grid[r][c] === studentName) {
+                                return { r, c };
+                            }
+                        }
                     }
+                } else if (layoutType === 'group') {
+                    for (let r = 0; r < grid.length; r++) {
+                        if (grid[r].includes(studentName)) {
+                            return { r, c: null };
+                        }
+                    }
+                }
+                return null;
+            }
+
+            function displaySeatingPlan(classroomData, numRowsOrGroups, numColsOrGroupSize, layoutType) {
+                const container = document.getElementById('seating-plan');
+                container.innerHTML = '';
+                
+                if (!classroomData) {
+                    return;
+                }
+
+                if (layoutType === 'single_row') {
+                    const table = document.createElement('table');
+                    table.className = 'border-collapse w-full rounded-lg overflow-hidden shadow-lg';
+                    for (let r = 0; r < numRowsOrGroups; r++) {
+                        const tr = document.createElement('tr');
+                        for (let c = 0; c < numColsOrGroupSize; c++) {
+                            const td = document.createElement('td');
+                            td.className = 'border border-gray-300 p-4 text-center h-24 w-24 md:h-28 md:w-28 bg-gray-50';
+                            const studentName = classroomData[r][c];
+                            if (studentName) {
+                                td.textContent = studentName;
+                                td.className += ' bg-blue-200 text-blue-800 font-bold text-xl rounded-lg shadow-md transition transform hover:scale-105';
+                            } else {
+                                td.className += ' text-gray-400 text-xl';
+                                td.textContent = '空位';
+                            }
+                            tr.appendChild(td);
+                        }
+                        table.appendChild(tr);
+                    }
+                    container.appendChild(table);
+                } else if (layoutType === 'group') {
+                    const gridDiv = document.createElement('div');
+                    gridDiv.className = 'flex flex-wrap justify-center';
                     
-                    constraints = planData.constraints;
-                    const constraintsList = document.getElementById('constraints-list');
-                    constraintsList.innerHTML = '';
-                    constraints.forEach(cons => {
-                        const li = document.createElement('li');
-                        li.textContent = cons.text;
-                        constraintsList.appendChild(li);
+                    classroomData.forEach((group, index) => {
+                        const groupDiv = document.createElement('div');
+                        groupDiv.className = 'group-table bg-white shadow-xl rounded-xl';
+                        
+                        const title = document.createElement('h3');
+                        title.className = 'text-center text-xl font-bold mb-2 text-gray-800';
+                        title.textContent = `第 ${index + 1} 組`;
+                        groupDiv.appendChild(title);
+
+                        const table = document.createElement('table');
+                        table.className = 'border-collapse';
+                        let row = document.createElement('tr');
+                        
+                        const seatsInGroup = group.length;
+                        const totalSeats = numColsOrGroupSize;
+
+                        for (let i = 0; i < totalSeats; i++) {
+                            const td = document.createElement('td');
+                            td.className = 'p-2';
+                            const seatDiv = document.createElement('div');
+                            seatDiv.className = 'seat bg-gray-200 text-gray-700 text-lg font-semibold';
+                            if (i < seatsInGroup) {
+                                seatDiv.textContent = group[i];
+                                seatDiv.className = 'seat bg-blue-200 text-blue-800 font-bold text-xl rounded-lg shadow-md transition transform hover:scale-105';
+                            } else {
+                                seatDiv.textContent = '空位';
+                                seatDiv.className = 'seat bg-gray-50 text-gray-400 text-xl';
+                            }
+                            td.appendChild(seatDiv);
+                            row.appendChild(td);
+                        }
+                        
+                        table.appendChild(row);
+                        groupDiv.appendChild(table);
+                        gridDiv.appendChild(groupDiv);
                     });
 
-                    // Trigger the layout change logic to show the correct inputs
-                    toggleLayoutInputs();
-                    
-                    setStatusMessage(`座位表 "${planName}" 已成功載入！您可以點擊生成按鈕來重新編排。`, 'success');
-                    // Clear previous seating plan display
-                    document.getElementById('seating-plan').innerHTML = '';
-                    
-                } else {
-                    setStatusMessage(`找不到名稱為 "${planName}" 的座位表。`, 'error');
+                    container.appendChild(gridDiv);
                 }
-            } catch (e) {
-                console.error("Error loading document: ", e);
-                setStatusMessage("載入失敗，請檢查名稱和網路連線。", 'error');
             }
-        }
 
-        function toggleLayoutInputs() {
-            const layoutType = document.getElementById('layout-type').value;
-            const singleRowInputs = document.getElementById('single-row-layout');
-            const groupInputs = document.getElementById('group-layout');
-            const preferredRowsContainer = document.getElementById('preferred-rows-container');
-            const differentGroupsContainer = document.getElementById('different-groups-container');
+            // --- Save and Load Functions (Firebase Firestore) ---
+            async function savePlan() {
+                if (!userId || !db) {
+                    setStatusMessage('Firebase 尚未初始化，無法儲存。', 'error');
+                    return;
+                }
+                const planName = document.getElementById('plan-name').value.trim();
+                if (!planName) {
+                    setStatusMessage('請輸入座位表名稱。', 'error');
+                    return;
+                }
 
+                try {
+                    const docRef = doc(db, `/artifacts/${appId}/users/${userId}/seating_plans/${planName}`);
+                    const studentsData = document.getElementById('students-data').value;
+                    const layoutType = document.getElementById('layout-type').value;
+                    const heightConstraintEnabled = document.getElementById('height-constraint-enabled').checked;
+                    const layoutSettings = {};
+                    if (layoutType === 'single_row') {
+                        layoutSettings.rows = parseInt(document.getElementById('rows').value, 10);
+                        layoutSettings.cols = parseInt(document.getElementById('cols').value, 10);
+                    } else {
+                        layoutSettings.numGroups = parseInt(document.getElementById('num-groups').value, 10);
+                        layoutSettings.groupSize = parseInt(document.getElementById('group-size').value, 10);
+                    }
+                    
+                    const dataToSave = {
+                        studentsData: studentsData,
+                        constraints: JSON.stringify(constraints),
+                        layoutType: layoutType,
+                        layoutSettings: layoutSettings,
+                        heightConstraintEnabled: heightConstraintEnabled,
+                    };
 
-            if (layoutType === 'single_row') {
-                singleRowInputs.classList.remove('hidden');
-                groupInputs.classList.add('hidden');
-                preferredRowsContainer.classList.remove('hidden');
-                differentGroupsContainer.classList.add('hidden');
-            } else if (layoutType === 'group') {
-                singleRowInputs.classList.add('hidden');
-                groupInputs.classList.remove('hidden');
-                preferredRowsContainer.classList.add('hidden');
-                differentGroupsContainer.classList.remove('hidden');
+                    await setDoc(docRef, dataToSave);
+                    setStatusMessage(`座位表 "${planName}" 已成功儲存！`, 'success');
+                } catch (e) {
+                    setStatusMessage(`儲存失敗: ${e.message}`, 'error');
+                    console.error("Error saving document: ", e);
+                }
             }
-        }
 
-        // --- Event Listeners ---
-        document.addEventListener('DOMContentLoaded', () => {
+            async function loadPlan() {
+                if (!userId || !db) {
+                    setStatusMessage('Firebase 尚未初始化，無法載入。', 'error');
+                    return;
+                }
+                const planName = document.getElementById('plan-name').value.trim();
+                if (!planName) {
+                    setStatusMessage('請輸入要載入的座位表名稱。', 'error');
+                    return;
+                }
+
+                try {
+                    const docRef = doc(db, `/artifacts/${appId}/users/${userId}/seating_plans/${planName}`);
+                    const docSnap = await getDoc(docRef);
+
+                    if (docSnap.exists()) {
+                        const data = docSnap.data();
+                        document.getElementById('students-data').value = data.studentsData;
+                        document.getElementById('layout-type').value = data.layoutType;
+                        document.getElementById('height-constraint-enabled').checked = data.heightConstraintEnabled;
+                        constraints = JSON.parse(data.constraints);
+
+                        // Clear and re-populate constraints list
+                        const constraintsList = document.getElementById('constraints-list');
+                        constraintsList.innerHTML = '';
+                        constraints.forEach(cons => {
+                            const li = document.createElement('li');
+                            li.textContent = cons.text;
+                            constraintsList.appendChild(li);
+                        });
+
+                        // Set layout inputs
+                        document.getElementById('layout-type').dispatchEvent(new Event('change'));
+                        if (data.layoutType === 'single_row') {
+                            document.getElementById('rows').value = data.layoutSettings.rows;
+                            document.getElementById('cols').value = data.layoutSettings.cols;
+                        } else {
+                            document.getElementById('num-groups').value = data.layoutSettings.numGroups;
+                            document.getElementById('group-size').value = data.layoutSettings.groupSize;
+                        }
+
+                        setStatusMessage(`座位表 "${planName}" 已成功載入！`, 'success');
+
+                    } else {
+                        setStatusMessage(`找不到名稱為 "${planName}" 的座位表。`, 'error');
+                    }
+                } catch (e) {
+                    setStatusMessage(`載入失敗: ${e.message}`, 'error');
+                    console.error("Error loading document: ", e);
+                }
+            }
+
+
+            // --- Event Listeners ---
+            document.getElementById('generate-plan').addEventListener('click', generateSeatingPlan);
             document.getElementById('add-not-adjacent').addEventListener('click', () => addConstraint('not_adjacent'));
             document.getElementById('add-preferred-rows').addEventListener('click', () => addConstraint('preferred_rows'));
             document.getElementById('add-different-groups').addEventListener('click', () => addConstraint('different_groups'));
             document.getElementById('save-plan').addEventListener('click', savePlan);
             document.getElementById('load-plan').addEventListener('click', loadPlan);
-            document.getElementById('generate-plan').addEventListener('click', generateSeatingPlan);
-            document.getElementById('layout-type').addEventListener('change', toggleLayoutInputs);
-            toggleLayoutInputs(); // Initial call to set the correct inputs on load
-        });
+            
+            // Layout type change listener
+            const layoutTypeSelect = document.getElementById('layout-type');
+            const singleRowLayoutDiv = document.getElementById('single-row-layout');
+            const groupLayoutDiv = document.getElementById('group-layout');
+            const preferredRowsContainer = document.getElementById('preferred-rows-container');
+            const differentGroupsContainer = document.getElementById('different-groups-container');
+
+            layoutTypeSelect.addEventListener('change', (event) => {
+                if (event.target.value === 'single_row') {
+                    singleRowLayoutDiv.classList.remove('hidden');
+                    groupLayoutDiv.classList.add('hidden');
+                    preferredRowsContainer.classList.remove('hidden');
+                    differentGroupsContainer.classList.add('hidden');
+                } else {
+                    singleRowLayoutDiv.classList.add('hidden');
+                    groupLayoutDiv.classList.remove('hidden');
+                    preferredRowsContainer.classList.add('hidden');
+                    differentGroupsContainer.classList.remove('hidden');
+                }
+            });
+        };
     </script>
 </body>
 </html>
