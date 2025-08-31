@@ -13,7 +13,7 @@
     .seat { width: 80px; height: 80px; display: flex; align-items: center; justify-content: center; text-align: center; border-radius: .5rem; box-shadow: 0 4px 6px rgba(0,0,0,.1); transition: transform .2s; }
     .seat:hover { transform: scale(1.05); }
   </style>
-  <!-- 若要雲端儲存，請在這行之前引入 ./config.js -->
+  <!-- 若要啟用雲端儲存，請在這行之前引入 ./config.js -->
   <!-- <script src="./config.js"></script> -->
 </head>
 <body class="bg-gray-100 p-8 flex flex-col items-center min-h-screen">
@@ -87,6 +87,16 @@
           </div>
         </div>
 
+        <!-- 指定列數（single_row 使用） -->
+        <div id="preferred-cols-container">
+          <label for="preferred-cols-student" class="block text-sm font-medium text-gray-600">指定列數 (例如: D, 2-4列)</label>
+          <div class="flex items-center space-x-2 mt-1">
+            <input type="text" id="preferred-cols-student" class="w-1/3 p-2 border border-gray-300 rounded-lg" placeholder="學生">
+            <input type="text" id="preferred-cols-range" class="flex-1 p-2 border border-gray-300 rounded-lg" placeholder="列數範圍 (例如: 2-4)">
+            <button id="add-preferred-cols" class="bg-blue-500 text-white px-4 py-2 rounded-lg hover:bg-blue-600 transition duration-200">新增</button>
+          </div>
+        </div>
+
         <div id="different-groups-container" class="hidden">
           <label for="different-groups" class="block text-sm font-medium text-gray-600">不同組 (例如: A,B,C)</label>
           <input type="text" id="different-groups" class="w-full mt-1 p-2 border border-gray-300 rounded-lg focus:ring-blue-500 focus:border-blue-500" placeholder="輸入多位學生姓名，用逗號分隔">
@@ -134,6 +144,7 @@
         else statusMessage.className = 'mt-4 text-center font-semibold text-gray-700';
       }
 
+      // ---- Firebase（選配，無設定則自動改用 localStorage） ----
       const appId = typeof window.__app_id !== 'undefined' ? window.__app_id : 'default-app-id';
       const firebaseConfig = (() => { try { return typeof window.__firebase_config !== 'undefined' ? JSON.parse(window.__firebase_config) : {}; } catch { return {}; }})();
       const initialAuthToken = typeof window.__initial_auth_token !== 'undefined' ? window.__initial_auth_token : null;
@@ -161,10 +172,33 @@
         }
       })();
 
+      // ---- 狀態 ----
       let constraints = [];
       let studentsWithHeightMap = {};
       let currentSeatingPlan = {};
 
+      // ---- 解析學生資料（支援半形: / 全形：）----
+      function parseStudentData() {
+        const lines = document.getElementById('students-data').value
+          .split('\n').map(s => s.trim()).filter(Boolean);
+
+        const studentsList = [];
+        studentsWithHeightMap = {};
+        lines.forEach(line => {
+          const parts = line.split(/[:：]/).map(p => p.trim());
+          if (parts.length === 2) {
+            const name = parts[0];
+            const h = parseInt(parts[1], 10);
+            studentsList.push(name);
+            if (!isNaN(h)) studentsWithHeightMap[name] = h;
+          } else {
+            studentsList.push(parts[0]);
+          }
+        });
+        return studentsList;
+      }
+
+      // ---- 限制條件輸入 ----
       function addConstraint(type) {
         const constraintsList = document.getElementById('constraints-list');
         let students, text;
@@ -179,6 +213,12 @@
           if (!student || range.length !== 2 || isNaN(range[0]) || isNaN(range[1])) return setStatusMessage('指定排數限制需要學生姓名和有效的排數範圍 (例如: 1-2)。', 'error');
           students = [student, `${range[0]}-${range[1]}`];
           text = `${student} 需要坐在第 ${range[0]} 到 ${range[1]} 排`;
+        } else if (type === 'preferred_cols') {
+          const student = document.getElementById('preferred-cols-student').value.trim();
+          const range = document.getElementById('preferred-cols-range').value.trim().split('-').map(Number);
+          if (!student || range.length !== 2 || isNaN(range[0]) || isNaN(range[1])) return setStatusMessage('指定列數限制需要學生姓名和有效的列數範圍 (例如: 2-4)。', 'error');
+          students = [student, `${range[0]}-${range[1]}`];
+          text = `${student} 需要坐在第 ${range[0]} 到 ${range[1]} 列`;
         } else if (type === 'different_groups') {
           students = document.getElementById('different-groups').value.split(',').map(s => s.trim()).filter(Boolean);
           if (students.length < 2) return setStatusMessage('不同組限制需要輸入至少兩位學生，用逗號分隔。', 'error');
@@ -188,61 +228,70 @@
         }
 
         constraints.push({ type, students, text });
-        const li = document.createElement('li'); li.textContent = text; constraintsList.appendChild(li);
 
+        const li = document.createElement('li');
+        li.textContent = text;
+        constraintsList.appendChild(li);
+
+        // 清空欄位
         document.getElementById('not-adjacent').value = '';
         document.getElementById('preferred-rows-student').value = '';
         document.getElementById('preferred-rows-range').value = '';
+        const pcs = document.getElementById('preferred-cols-student'); if (pcs) pcs.value = '';
+        const pcr = document.getElementById('preferred-cols-range');   if (pcr) pcr.value = '';
         document.getElementById('different-groups').value = '';
         setStatusMessage('限制已新增。', 'info');
       }
 
-      function parseStudentData() {
-        const studentsInput = document.getElementById('students-data').value.split('\n').map(s => s.trim()).filter(Boolean);
-        const studentsList = [];
-        studentsWithHeightMap = {};
-        studentsInput.forEach(line => {
-          const parts = line.split(':').map(p => p.trim());
-          if (parts.length === 2) {
-            studentsList.push(parts[0]);
-            studentsWithHeightMap[parts[0]] = parseInt(parts[1], 10);
-          } else if (parts.length === 1 && parts[0] !== '') {
-            studentsList.push(parts[0]);
-          }
-        });
-        return studentsList;
-      }
-
+      // ---- 檢查限制（single_row）----
       function isPlacementValid(student, r, c, grid, layoutType) {
         const heightConstraintEnabled = document.getElementById('height-constraint-enabled').checked;
-        if (heightConstraintEnabled && layoutType === 'single_row') {
-          if (r > 0) {
-            const studentInFront = grid[r - 1][c];
-            if (studentInFront) {
-              const hCur = studentsWithHeightMap[student] || 0;
-              const hFront = studentsWithHeightMap[studentInFront] || 0;
-              if (hCur > hFront) return false;
-            }
-          }
-        }
 
         if (layoutType === 'single_row') {
-          const placedStudents = grid.flat().filter(Boolean);
-          for (const placedStudent of placedStudents) {
-            const placedPos = findStudentPos(placedStudent, grid, 'single_row');
-            if (placedPos) {
-              const { r: pr, c: pc } = placedPos;
-              const adj = constraints.find(cons =>
-                cons.type === 'not_adjacent' &&
-                ((cons.students[0] === student && cons.students[1] === placedStudent) ||
-                 (cons.students[1] === student && cons.students[0] === placedStudent))
-              );
-              if (adj) {
-                if (Math.abs(r - pr) <= 1 && Math.abs(c - pc) <= 1) return false;
+          // 身高限制：高個子不能坐在矮個子前面 ⇒ 前排高度不可 > 後排高度
+          if (heightConstraintEnabled && r > 0) {
+            const studentInFront = grid[r - 1][c];
+            if (studentInFront) {
+              const frontH = studentsWithHeightMap[studentInFront];
+              const curH   = studentsWithHeightMap[student];
+              if (typeof frontH === 'number' && typeof curH === 'number') {
+                if (frontH > curH) return false; // 前排更高 ⇒ 違規
               }
             }
           }
+
+          // 不相鄰限制（含斜對角）
+          const placedStudents = grid.flat().filter(Boolean);
+          for (const placed of placedStudents) {
+            const pos = findStudentPos(placed, grid, 'single_row');
+            if (!pos) continue;
+            const adj = constraints.find(cons =>
+              cons.type === 'not_adjacent' &&
+              ((cons.students[0] === student && cons.students[1] === placed) ||
+               (cons.students[1] === student && cons.students[0] === placed))
+            );
+            if (adj) {
+              if (Math.abs(r - pos.r) <= 1 && Math.abs(c - pos.c) <= 1) return false;
+            }
+          }
+
+          // 指定排數限制（1-based）
+          const prefRows = constraints.find(cons => cons.type === 'preferred_rows' && cons.students[0] === student);
+          if (prefRows) {
+            const [rs, re] = prefRows.students[1].split('-').map(Number);
+            const row1 = r + 1;
+            if (row1 < rs || row1 > re) return false;
+          }
+
+          // 指定列數限制（1-based）
+          const prefCols = constraints.find(cons => cons.type === 'preferred_cols' && cons.students[0] === student);
+          if (prefCols && typeof c === 'number') {
+            const [cs, ce] = prefCols.students[1].split('-').map(Number);
+            const col1 = c + 1;
+            if (col1 < cs || col1 > ce) return false;
+          }
         } else if (layoutType === 'group') {
+          // group 版不相鄰：同組不可放入 not_adjacent 配對
           const curGroup = grid[r];
           const notAdj = constraints.find(cons =>
             cons.type === 'not_adjacent' &&
@@ -251,17 +300,13 @@
           );
           if (notAdj) return false;
 
+          // group 版不同組：同一限制清單中的學生不可同組
           const diff = constraints.find(cons => cons.type === 'different_groups');
           if (diff && diff.students.includes(student)) {
             for (const ps of curGroup) if (diff.students.includes(ps)) return false;
           }
         }
 
-        const pref = constraints.find(cons => cons.type === 'preferred_rows' && cons.students[0] === student);
-        if (pref) {
-          const [s,e] = pref.students[1].split('-').map(Number);
-          if (r < (s-1) || r > (e-1)) return false;
-        }
         return true;
       }
 
@@ -280,45 +325,34 @@
         return null;
       }
 
-      // === 顯示：加「黑板」列 + 空位集中最後一列 ===
+      // ---- 顯示（single_row：黑板 + 最右側走廊；不做重排）----
       function displaySeatingPlan(classroomData, numRowsOrGroups, numColsOrGroupSize, layoutType) {
         const container = document.getElementById('seating-plan');
         container.innerHTML = '';
         if (!classroomData) return;
 
         if (layoutType === 'single_row') {
-          // 將學生從第一列開始連續填滿（空位集中到最後一列）
-          const studentsOnly = classroomData.flat().filter(Boolean);
-          const newGrid = Array.from({ length: numRowsOrGroups }, () => Array(numColsOrGroupSize).fill(null));
-          let idx = 0;
-          for (let r = 0; r < numRowsOrGroups; r++) {
-            for (let c = 0; c < numColsOrGroupSize; c++) {
-              if (idx < studentsOnly.length) newGrid[r][c] = studentsOnly[idx++];
-            }
-          }
-          classroomData = newGrid;
-
           const table = document.createElement('table');
           table.className = 'border-collapse w-full rounded-lg overflow-hidden shadow-lg';
 
-          // 黑板列
+          // 黑板列（右邊多一欄是走廊，因此 colSpan + 1）
           const boardRow = document.createElement('tr');
           const boardCell = document.createElement('td');
-          boardCell.colSpan = numColsOrGroupSize;
+          boardCell.colSpan = numColsOrGroupSize + 1;
           boardCell.className = 'bg-black text-white text-center font-bold py-2';
           boardCell.textContent = '黑板';
           boardRow.appendChild(boardCell);
           table.appendChild(boardRow);
 
-          // 座位
+          // 每排：座位 + 走廊
           for (let r = 0; r < numRowsOrGroups; r++) {
             const tr = document.createElement('tr');
             for (let c = 0; c < numColsOrGroupSize; c++) {
               const td = document.createElement('td');
               td.className = 'border border-gray-300 p-4 text-center h-24 w-24 md:h-28 md:w-28 bg-gray-50';
-              const studentName = classroomData[r][c];
-              if (studentName) {
-                td.textContent = studentName;
+              const name = classroomData[r][c];
+              if (name) {
+                td.textContent = name;
                 td.className += ' bg-blue-200 text-blue-800 font-bold text-xl rounded-lg shadow-md transition transform hover:scale-105';
               } else {
                 td.textContent = '空位';
@@ -326,9 +360,17 @@
               }
               tr.appendChild(td);
             }
+
+            // 最右邊走廊（純顯示，不參與求解）
+            const corridor = document.createElement('td');
+            corridor.className = 'border border-gray-300 bg-gray-800 text-white text-center font-bold';
+            corridor.textContent = '走廊';
+            tr.appendChild(corridor);
+
             table.appendChild(tr);
           }
           container.appendChild(table);
+
         } else if (layoutType === 'group') {
           const gridDiv = document.createElement('div');
           gridDiv.className = 'flex flex-wrap justify-center';
@@ -346,15 +388,12 @@
             table.className = 'border-collapse';
             let row = document.createElement('tr');
 
-            const seatsInGroup = group.length;
             const totalSeats = numColsOrGroupSize;
-
             for (let i = 0; i < totalSeats; i++) {
               const td = document.createElement('td');
               td.className = 'p-2';
               const seatDiv = document.createElement('div');
-              seatDiv.className = 'seat bg-gray-200 text-gray-700 text-lg font-semibold';
-              if (i < seatsInGroup) {
+              if (i < group.length) {
                 seatDiv.textContent = group[i];
                 seatDiv.className = 'seat bg-blue-200 text-blue-800 font-bold text-xl rounded-lg shadow-md transition transform hover:scale-105';
               } else {
@@ -374,6 +413,7 @@
         }
       }
 
+      // ---- 生成（single_row：逐席回溯，確保空位只在最後一列）----
       function generateSeatingPlan() {
         const students = parseStudentData();
         const layoutType = document.getElementById('layout-type').value;
@@ -384,37 +424,47 @@
         if (layoutType === 'single_row') {
           numRows = parseInt(document.getElementById('rows').value, 10);
           numCols = parseInt(document.getElementById('cols').value, 10);
-          if (students.length > numRows * numCols) return setStatusMessage(`座位不足！學生人數(${students.length})超過座位總數(${numRows * numCols})。`, 'error');
+          if (isNaN(numRows) || isNaN(numCols) || numRows <= 0 || numCols <= 0) {
+            setStatusMessage('請輸入有效的排數/列數。', 'error');
+            return;
+          }
+          if (students.length > numRows * numCols) {
+            setStatusMessage(`座位不足！學生人數(${students.length})超過座位總數(${numRows * numCols})。`, 'error');
+            return;
+          }
           planData = Array.from({ length: numRows }, () => Array(numCols).fill(null));
-        } else {
-          numGroups = parseInt(document.getElementById('num-groups').value, 10);
-          groupSize = parseInt(document.getElementById('group-size').value, 10);
-          if (students.length > numGroups * groupSize) return setStatusMessage(`座位不足！學生人數(${students.length})超過座位總數(${numGroups * groupSize})。`, 'error');
-          planData = Array.from({ length: numGroups }, () => []);
-        }
 
-        if (!students.length || ((isNaN(numRows) && isNaN(numGroups)) || ((numRows <= 0) && (numGroups <= 0)))) {
-          return setStatusMessage('請輸入有效的學生名單和教室大小。', 'error');
-        }
+          // 只指派前 N 個席位（row-major），確保前面不留空
+          const N = students.length;
+          const seatOrder = [];
+          for (let r = 0; r < numRows; r++) {
+            for (let c = 0; c < numCols; c++) {
+              if (seatOrder.length < N) seatOrder.push({ r, c });
+            }
+          }
 
-        const shuffled = [...students].sort(() => Math.random() - 0.5);
+          const used = new Set();
+          const candidates = [...students].sort(() => Math.random() - 0.5);
 
-        if (layoutType === 'single_row') {
-          const solve = (idx) => {
-            if (idx === shuffled.length) return true;
-            const s = shuffled[idx];
-            for (let r = 0; r < numRows; r++) {
-              for (let c = 0; c < numCols; c++) {
-                if (planData[r][c] === null && isPlacementValid(s, r, c, planData, 'single_row')) {
-                  planData[r][c] = s;
-                  if (solve(idx + 1)) return true;
-                  planData[r][c] = null;
-                }
+          const place = (idx) => {
+            if (idx === seatOrder.length) return true;
+            const { r, c } = seatOrder[idx];
+            for (let i = 0; i < candidates.length; i++) {
+              const s = candidates[i];
+              if (used.has(s)) continue;
+
+              planData[r][c] = s;
+              if (isPlacementValid(s, r, c, planData, 'single_row')) {
+                used.add(s);
+                if (place(idx + 1)) return true;
+                used.delete(s);
               }
+              planData[r][c] = null;
             }
             return false;
           };
-          if (solve(0)) {
+
+          if (place(0)) {
             currentSeatingPlan = { students, plan: planData, layout: layoutType, numRows, numCols };
             setStatusMessage('座位表成功生成！', 'success');
             displaySeatingPlan(planData, numRows, numCols, 'single_row');
@@ -422,7 +472,21 @@
             setStatusMessage('無法在限制條件下找到合適的座位安排。請調整限制或增加座位數。', 'error');
             displaySeatingPlan(null, numRows, numCols, 'single_row');
           }
-        } else {
+
+        } else if (layoutType === 'group') {
+          numGroups = parseInt(document.getElementById('num-groups').value, 10);
+          groupSize = parseInt(document.getElementById('group-size').value, 10);
+          if (isNaN(numGroups) || isNaN(groupSize) || numGroups <= 0 || groupSize <= 0) {
+            setStatusMessage('請輸入有效的組數/每組座位數。', 'error');
+            return;
+          }
+          if (students.length > numGroups * groupSize) {
+            setStatusMessage(`座位不足！學生人數(${students.length})超過座位總數(${numGroups * groupSize})。`, 'error');
+            return;
+          }
+          planData = Array.from({ length: numGroups }, () => []);
+
+          const shuffled = [...students].sort(() => Math.random() - 0.5);
           const solve = (idx) => {
             if (idx === shuffled.length) return true;
             const s = shuffled[idx];
@@ -436,6 +500,7 @@
             }
             return false;
           };
+
           if (solve(0)) {
             currentSeatingPlan = { students, plan: planData, layout: layoutType, numGroups, groupSize };
             setStatusMessage('座位表成功生成！', 'success');
@@ -447,6 +512,7 @@
         }
       }
 
+      // ---- 儲存 / 載入（Firebase 或 localStorage）----
       async function savePlan() {
         const planName = document.getElementById('plan-name').value.trim();
         if (!planName) return setStatusMessage('請輸入座位表名稱。', 'error');
@@ -522,9 +588,11 @@
         }
       }
 
+      // ---- 事件綁定 ----
       document.getElementById('generate-plan').addEventListener('click', generateSeatingPlan);
       document.getElementById('add-not-adjacent').addEventListener('click', () => addConstraint('not_adjacent'));
       document.getElementById('add-preferred-rows').addEventListener('click', () => addConstraint('preferred_rows'));
+      document.getElementById('add-preferred-cols').addEventListener('click', () => addConstraint('preferred_cols'));
       document.getElementById('add-different-groups').addEventListener('click', () => addConstraint('different_groups'));
       document.getElementById('save-plan').addEventListener('click', savePlan);
       document.getElementById('load-plan').addEventListener('click', loadPlan);
@@ -533,6 +601,7 @@
       const singleRowLayoutDiv = document.getElementById('single-row-layout');
       const groupLayoutDiv = document.getElementById('group-layout');
       const preferredRowsContainer = document.getElementById('preferred-rows-container');
+      const preferredColsContainer = document.getElementById('preferred-cols-container');
       const differentGroupsContainer = document.getElementById('different-groups-container');
 
       layoutTypeSelect.addEventListener('change', (e) => {
@@ -540,11 +609,13 @@
           singleRowLayoutDiv.classList.remove('hidden');
           groupLayoutDiv.classList.add('hidden');
           preferredRowsContainer.classList.remove('hidden');
+          preferredColsContainer.classList.remove('hidden');
           differentGroupsContainer.classList.add('hidden');
         } else {
           singleRowLayoutDiv.classList.add('hidden');
           groupLayoutDiv.classList.remove('hidden');
           preferredRowsContainer.classList.add('hidden');
+          preferredColsContainer.classList.add('hidden');
           differentGroupsContainer.classList.remove('hidden');
         }
       });
