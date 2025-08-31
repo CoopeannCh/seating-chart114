@@ -13,6 +13,8 @@
     .seat { width: 80px; height: 80px; display: flex; align-items: center; justify-content: center; text-align: center; border-radius: .5rem; box-shadow: 0 4px 6px rgba(0,0,0,.1); transition: transform .2s; }
     .seat:hover { transform: scale(1.05); }
   </style>
+  <!-- 若要雲端儲存，請在這行之前引入 ./config.js -->
+  <!-- <script src="./config.js"></script> -->
 </head>
 <body class="bg-gray-100 p-8 flex flex-col items-center min-h-screen">
   <div class="bg-white rounded-xl shadow-lg p-6 max-w-4xl w-full">
@@ -118,14 +120,12 @@
     </div>
   </div>
 
-  <!-- Firebase 模組載入（type=module） -->
   <script type="module">
     import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
     import { getAuth, signInAnonymously, signInWithCustomToken } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
     import { getFirestore, doc, getDoc, setDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
     document.addEventListener('DOMContentLoaded', () => {
-      // ========== 狀態顯示 ==========
       function setStatusMessage(message, type = 'info') {
         const statusMessage = document.getElementById('status-message');
         statusMessage.textContent = message;
@@ -134,16 +134,11 @@
         else statusMessage.className = 'mt-4 text-center font-semibold text-gray-700';
       }
 
-      // ========== Firebase (安全初始化 + 可降級) ==========
       const appId = typeof window.__app_id !== 'undefined' ? window.__app_id : 'default-app-id';
-      const firebaseConfig = (() => {
-        try { return typeof window.__firebase_config !== 'undefined' ? JSON.parse(window.__firebase_config) : {}; }
-        catch { return {}; }
-      })();
+      const firebaseConfig = (() => { try { return typeof window.__firebase_config !== 'undefined' ? JSON.parse(window.__firebase_config) : {}; } catch { return {}; }})();
       const initialAuthToken = typeof window.__initial_auth_token !== 'undefined' ? window.__initial_auth_token : null;
 
-      let app = null, db = null, auth = null, firebaseReady = false, userId = 'anonymous';
-
+      let app=null, db=null, auth=null, firebaseReady=false, userId='anonymous';
       const hasValidFirebaseConfig = cfg => cfg && typeof cfg === 'object' && !!cfg.apiKey;
 
       (async () => {
@@ -152,11 +147,8 @@
             app = initializeApp(firebaseConfig);
             db = getFirestore(app);
             auth = getAuth(app);
-            if (initialAuthToken) {
-              await signInWithCustomToken(auth, initialAuthToken);
-            } else {
-              await signInAnonymously(auth);
-            }
+            if (initialAuthToken) await signInWithCustomToken(auth, initialAuthToken);
+            else await signInAnonymously(auth);
             userId = auth.currentUser?.uid || 'anonymous';
             firebaseReady = true;
             console.log('Firebase initialized. userId=', userId);
@@ -169,12 +161,10 @@
         }
       })();
 
-      // ========== App 狀態 ==========
       let constraints = [];
       let studentsWithHeightMap = {};
       let currentSeatingPlan = {};
 
-      // ========== 限制條件 ==========
       function addConstraint(type) {
         const constraintsList = document.getElementById('constraints-list');
         let students, text;
@@ -198,12 +188,8 @@
         }
 
         constraints.push({ type, students, text });
+        const li = document.createElement('li'); li.textContent = text; constraintsList.appendChild(li);
 
-        const li = document.createElement('li');
-        li.textContent = text;
-        constraintsList.appendChild(li);
-
-        // 清空欄位
         document.getElementById('not-adjacent').value = '';
         document.getElementById('preferred-rows-student').value = '';
         document.getElementById('preferred-rows-range').value = '';
@@ -233,9 +219,9 @@
           if (r > 0) {
             const studentInFront = grid[r - 1][c];
             if (studentInFront) {
-              const currentStudentHeight = studentsWithHeightMap[student] || 0;
-              const studentInFrontHeight = studentsWithHeightMap[studentInFront] || 0;
-              if (currentStudentHeight > studentInFrontHeight) return false;
+              const hCur = studentsWithHeightMap[student] || 0;
+              const hFront = studentsWithHeightMap[studentInFront] || 0;
+              if (hCur > hFront) return false;
             }
           }
         }
@@ -245,40 +231,36 @@
           for (const placedStudent of placedStudents) {
             const placedPos = findStudentPos(placedStudent, grid, 'single_row');
             if (placedPos) {
-              const { r: placedR, c: placedC } = placedPos;
-              const adjacentConstraint = constraints.find(cons =>
+              const { r: pr, c: pc } = placedPos;
+              const adj = constraints.find(cons =>
                 cons.type === 'not_adjacent' &&
                 ((cons.students[0] === student && cons.students[1] === placedStudent) ||
                  (cons.students[1] === student && cons.students[0] === placedStudent))
               );
-              if (adjacentConstraint) {
-                if (Math.abs(r - placedR) <= 1 && Math.abs(c - placedC) <= 1) return false;
+              if (adj) {
+                if (Math.abs(r - pr) <= 1 && Math.abs(c - pc) <= 1) return false;
               }
             }
           }
         } else if (layoutType === 'group') {
-          const currentGroupArr = grid[r];
-          const notAdjacentConstraint = constraints.find(cons =>
+          const curGroup = grid[r];
+          const notAdj = constraints.find(cons =>
             cons.type === 'not_adjacent' &&
-            ((cons.students[0] === student && currentGroupArr.includes(cons.students[1])) ||
-             (cons.students[1] === student && currentGroupArr.includes(cons.students[0])))
+            ((cons.students[0] === student && curGroup.includes(cons.students[1])) ||
+             (cons.students[1] === student && curGroup.includes(cons.students[0])))
           );
-          if (notAdjacentConstraint) return false;
+          if (notAdj) return false;
 
-          const differentGroupsConstraint = constraints.find(cons => cons.type === 'different_groups');
-          if (differentGroupsConstraint && differentGroupsConstraint.students.includes(student)) {
-            for (const placedStudent of currentGroupArr) {
-              if (differentGroupsConstraint.students.includes(placedStudent)) return false;
-            }
+          const diff = constraints.find(cons => cons.type === 'different_groups');
+          if (diff && diff.students.includes(student)) {
+            for (const ps of curGroup) if (diff.students.includes(ps)) return false;
           }
         }
 
-        const preferredRowsConstraint = constraints.find(cons => cons.type === 'preferred_rows' && cons.students[0] === student);
-        if (preferredRowsConstraint) {
-          const range = preferredRowsConstraint.students[1].split('-').map(Number);
-          const startRow = range[0] - 1;
-          const endRow = range[1] - 1;
-          if (r < startRow || r > endRow) return false;
+        const pref = constraints.find(cons => cons.type === 'preferred_rows' && cons.students[0] === student);
+        if (pref) {
+          const [s,e] = pref.students[1].split('-').map(Number);
+          if (r < (s-1) || r > (e-1)) return false;
         }
         return true;
       }
@@ -298,14 +280,37 @@
         return null;
       }
 
+      // === 顯示：加「黑板」列 + 空位集中最後一列 ===
       function displaySeatingPlan(classroomData, numRowsOrGroups, numColsOrGroupSize, layoutType) {
         const container = document.getElementById('seating-plan');
         container.innerHTML = '';
         if (!classroomData) return;
 
         if (layoutType === 'single_row') {
+          // 將學生從第一列開始連續填滿（空位集中到最後一列）
+          const studentsOnly = classroomData.flat().filter(Boolean);
+          const newGrid = Array.from({ length: numRowsOrGroups }, () => Array(numColsOrGroupSize).fill(null));
+          let idx = 0;
+          for (let r = 0; r < numRowsOrGroups; r++) {
+            for (let c = 0; c < numColsOrGroupSize; c++) {
+              if (idx < studentsOnly.length) newGrid[r][c] = studentsOnly[idx++];
+            }
+          }
+          classroomData = newGrid;
+
           const table = document.createElement('table');
           table.className = 'border-collapse w-full rounded-lg overflow-hidden shadow-lg';
+
+          // 黑板列
+          const boardRow = document.createElement('tr');
+          const boardCell = document.createElement('td');
+          boardCell.colSpan = numColsOrGroupSize;
+          boardCell.className = 'bg-black text-white text-center font-bold py-2';
+          boardCell.textContent = '黑板';
+          boardRow.appendChild(boardCell);
+          table.appendChild(boardRow);
+
+          // 座位
           for (let r = 0; r < numRowsOrGroups; r++) {
             const tr = document.createElement('tr');
             for (let c = 0; c < numColsOrGroupSize; c++) {
@@ -316,8 +321,8 @@
                 td.textContent = studentName;
                 td.className += ' bg-blue-200 text-blue-800 font-bold text-xl rounded-lg shadow-md transition transform hover:scale-105';
               } else {
-                td.className += ' text-gray-400 text-xl';
                 td.textContent = '空位';
+                td.className += ' text-gray-400 text-xl';
               }
               tr.appendChild(td);
             }
@@ -392,12 +397,12 @@
           return setStatusMessage('請輸入有效的學生名單和教室大小。', 'error');
         }
 
-        const shuffledStudents = [...students].sort(() => Math.random() - 0.5);
+        const shuffled = [...students].sort(() => Math.random() - 0.5);
 
         if (layoutType === 'single_row') {
           const solve = (idx) => {
-            if (idx === shuffledStudents.length) return true;
-            const s = shuffledStudents[idx];
+            if (idx === shuffled.length) return true;
+            const s = shuffled[idx];
             for (let r = 0; r < numRows; r++) {
               for (let c = 0; c < numCols; c++) {
                 if (planData[r][c] === null && isPlacementValid(s, r, c, planData, 'single_row')) {
@@ -419,8 +424,8 @@
           }
         } else {
           const solve = (idx) => {
-            if (idx === shuffledStudents.length) return true;
-            const s = shuffledStudents[idx];
+            if (idx === shuffled.length) return true;
+            const s = shuffled[idx];
             const order = Array.from({ length: numGroups }, (_, i) => i).sort((a, b) => planData[a].length - planData[b].length);
             for (const g of order) {
               if (planData[g].length < groupSize && isPlacementValid(s, g, null, planData, 'group')) {
@@ -442,7 +447,6 @@
         }
       }
 
-      // ========== 儲存 / 載入（Firebase 或 localStorage） ==========
       async function savePlan() {
         const planName = document.getElementById('plan-name').value.trim();
         if (!planName) return setStatusMessage('請輸入座位表名稱。', 'error');
@@ -499,13 +503,8 @@
           document.getElementById('height-constraint-enabled').checked = !!data.heightConstraintEnabled;
 
           constraints = JSON.parse(data.constraints || '[]');
-          const list = document.getElementById('constraints-list');
-          list.innerHTML = '';
-          constraints.forEach(cons => {
-            const li = document.createElement('li');
-            li.textContent = cons.text;
-            list.appendChild(li);
-          });
+          const list = document.getElementById('constraints-list'); list.innerHTML = '';
+          constraints.forEach(cons => { const li = document.createElement('li'); li.textContent = cons.text; list.appendChild(li); });
 
           document.getElementById('layout-type').dispatchEvent(new Event('change'));
           if (data.layoutType === 'single_row') {
@@ -523,7 +522,6 @@
         }
       }
 
-      // ========== 事件監聽器（無論 Firebase 成敗都會綁定） ==========
       document.getElementById('generate-plan').addEventListener('click', generateSeatingPlan);
       document.getElementById('add-not-adjacent').addEventListener('click', () => addConstraint('not_adjacent'));
       document.getElementById('add-preferred-rows').addEventListener('click', () => addConstraint('preferred_rows'));
