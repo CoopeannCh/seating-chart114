@@ -107,7 +107,7 @@
 
     <div class="mb-6 bg-gray-50 p-4 rounded-lg shadow-inner">
       <h2 class="text-lg font-semibold text-gray-700 mb-2">已設定的限制:</h2>
-      <ul id="constraints-list" class="list-disc list-inside space-y-1 text-gray-700"></ul>
+      <ul id="constraints-list" class="list-disc list-inside space-y-2 text-gray-700"></ul>
     </div>
 
     <div class="mb-6 bg-gray-50 p-4 rounded-lg shadow-inner w-full">
@@ -177,6 +177,32 @@
       let studentsWithHeightMap = {};
       let currentSeatingPlan = {};
 
+      // ---- 渲染限制清單（含刪除鈕）----
+      function renderConstraintsList() {
+        const list = document.getElementById('constraints-list');
+        list.innerHTML = '';
+        constraints.forEach((cons, idx) => {
+          const li = document.createElement('li');
+          li.className = 'flex items-center justify-between bg-gray-50 rounded px-3 py-2';
+          const textSpan = document.createElement('span');
+          textSpan.textContent = cons.text;
+          const btn = document.createElement('button');
+          btn.type = 'button';
+          btn.className = 'btn-delete-constraint bg-red-500 hover:bg-red-600 text-white text-sm px-2 py-1 rounded';
+          btn.dataset.index = String(idx);
+          btn.textContent = '刪除';
+          li.appendChild(textSpan);
+          li.appendChild(btn);
+          list.appendChild(li);
+        });
+        if (constraints.length === 0) {
+          const li = document.createElement('li');
+          li.className = 'text-gray-400';
+          li.textContent = '（尚未新增限制）';
+          list.appendChild(li);
+        }
+      }
+
       // ---- 解析學生資料（支援半形: / 全形：）----
       function parseStudentData() {
         const lines = document.getElementById('students-data').value
@@ -200,7 +226,6 @@
 
       // ---- 限制條件輸入 ----
       function addConstraint(type) {
-        const constraintsList = document.getElementById('constraints-list');
         let students, text;
 
         if (type === 'not_adjacent') {
@@ -229,10 +254,6 @@
 
         constraints.push({ type, students, text });
 
-        const li = document.createElement('li');
-        li.textContent = text;
-        constraintsList.appendChild(li);
-
         // 清空欄位
         document.getElementById('not-adjacent').value = '';
         document.getElementById('preferred-rows-student').value = '';
@@ -240,7 +261,9 @@
         const pcs = document.getElementById('preferred-cols-student'); if (pcs) pcs.value = '';
         const pcr = document.getElementById('preferred-cols-range');   if (pcr) pcr.value = '';
         document.getElementById('different-groups').value = '';
+
         setStatusMessage('限制已新增。', 'info');
+        renderConstraintsList();
       }
 
       // ---- 檢查限制（single_row）----
@@ -248,14 +271,14 @@
         const heightConstraintEnabled = document.getElementById('height-constraint-enabled').checked;
 
         if (layoutType === 'single_row') {
-          // 身高限制：高個子不能坐在矮個子前面 ⇒ 前排高度不可 > 後排高度
+          // 身高限制：高個子不能坐在矮個子前面 ⇒ 前排不可高於後排
           if (heightConstraintEnabled && r > 0) {
             const studentInFront = grid[r - 1][c];
             if (studentInFront) {
               const frontH = studentsWithHeightMap[studentInFront];
               const curH   = studentsWithHeightMap[student];
               if (typeof frontH === 'number' && typeof curH === 'number') {
-                if (frontH > curH) return false; // 前排更高 ⇒ 違規
+                if (frontH > curH) return false;
               }
             }
           }
@@ -291,7 +314,6 @@
             if (col1 < cs || col1 > ce) return false;
           }
         } else if (layoutType === 'group') {
-          // group 版不相鄰：同組不可放入 not_adjacent 配對
           const curGroup = grid[r];
           const notAdj = constraints.find(cons =>
             cons.type === 'not_adjacent' &&
@@ -300,7 +322,6 @@
           );
           if (notAdj) return false;
 
-          // group 版不同組：同一限制清單中的學生不可同組
           const diff = constraints.find(cons => cons.type === 'different_groups');
           if (diff && diff.students.includes(student)) {
             for (const ps of curGroup) if (diff.students.includes(ps)) return false;
@@ -569,8 +590,7 @@
           document.getElementById('height-constraint-enabled').checked = !!data.heightConstraintEnabled;
 
           constraints = JSON.parse(data.constraints || '[]');
-          const list = document.getElementById('constraints-list'); list.innerHTML = '';
-          constraints.forEach(cons => { const li = document.createElement('li'); li.textContent = cons.text; list.appendChild(li); });
+          renderConstraintsList();
 
           document.getElementById('layout-type').dispatchEvent(new Event('change'));
           if (data.layoutType === 'single_row') {
@@ -597,6 +617,18 @@
       document.getElementById('save-plan').addEventListener('click', savePlan);
       document.getElementById('load-plan').addEventListener('click', loadPlan);
 
+      // 代理監聽刪除按鈕（因為 li 是動態渲染的）
+      document.getElementById('constraints-list').addEventListener('click', (e) => {
+        const btn = e.target.closest('.btn-delete-constraint');
+        if (!btn) return;
+        const idx = parseInt(btn.dataset.index, 10);
+        if (Number.isInteger(idx) && idx >= 0 && idx < constraints.length) {
+          constraints.splice(idx, 1);
+          renderConstraintsList();
+          setStatusMessage('已刪除一個限制。', 'info');
+        }
+      });
+
       const layoutTypeSelect = document.getElementById('layout-type');
       const singleRowLayoutDiv = document.getElementById('single-row-layout');
       const groupLayoutDiv = document.getElementById('group-layout');
@@ -619,6 +651,9 @@
           differentGroupsContainer.classList.remove('hidden');
         }
       });
+
+      // 初次渲染清單（顯示空提示）
+      renderConstraintsList();
     });
   </script>
 </body>
