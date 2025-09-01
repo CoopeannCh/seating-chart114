@@ -123,6 +123,17 @@
       生成座位表
     </button>
 
+    <!-- 時間上限 & 停止 -->
+    <div class="mt-2 flex items-center justify-end gap-2">
+      <label for="time-limit" class="text-sm text-gray-500">時間上限(秒)</label>
+      <input type="number" id="time-limit" value="3" min="1" max="60"
+            class="w-20 p-1 border border-gray-300 rounded">
+      <button id="cancel-solve"
+              class="hidden bg-red-500 text-white px-3 py-1 rounded hover:bg-red-600">
+        停止
+      </button>
+    </div>
+
     <div id="status-message" class="mt-4 text-center font-semibold"></div>
 
     <div id="seating-plan-container" class="mt-8 overflow-x-auto">
@@ -176,6 +187,8 @@
       let constraints = [];
       let studentsWithHeightMap = {};
       let currentSeatingPlan = {};
+      let solverWorker = null;
+      let solving = false;
 
       // ---- 渲染限制清單（含刪除鈕）----
       function renderConstraintsList() {
@@ -266,86 +279,6 @@
         renderConstraintsList();
       }
 
-      // ---- 檢查限制（single_row）----
-      function isPlacementValid(student, r, c, grid, layoutType) {
-        const heightConstraintEnabled = document.getElementById('height-constraint-enabled').checked;
-
-        if (layoutType === 'single_row') {
-          // 身高限制：高個子不能坐在矮個子前面 ⇒ 前排不可高於後排
-          if (heightConstraintEnabled && r > 0) {
-            const studentInFront = grid[r - 1][c];
-            if (studentInFront) {
-              const frontH = studentsWithHeightMap[studentInFront];
-              const curH   = studentsWithHeightMap[student];
-              if (typeof frontH === 'number' && typeof curH === 'number') {
-                if (frontH > curH) return false;
-              }
-            }
-          }
-
-          // 不相鄰限制（含斜對角）
-          const placedStudents = grid.flat().filter(Boolean);
-          for (const placed of placedStudents) {
-            const pos = findStudentPos(placed, grid, 'single_row');
-            if (!pos) continue;
-            const adj = constraints.find(cons =>
-              cons.type === 'not_adjacent' &&
-              ((cons.students[0] === student && cons.students[1] === placed) ||
-               (cons.students[1] === student && cons.students[0] === placed))
-            );
-            if (adj) {
-              if (Math.abs(r - pos.r) <= 1 && Math.abs(c - pos.c) <= 1) return false;
-            }
-          }
-
-          // 指定排數限制（1-based）
-          const prefRows = constraints.find(cons => cons.type === 'preferred_rows' && cons.students[0] === student);
-          if (prefRows) {
-            const [rs, re] = prefRows.students[1].split('-').map(Number);
-            const row1 = r + 1;
-            if (row1 < rs || row1 > re) return false;
-          }
-
-          // 指定列數限制（1-based）
-          const prefCols = constraints.find(cons => cons.type === 'preferred_cols' && cons.students[0] === student);
-          if (prefCols && typeof c === 'number') {
-            const [cs, ce] = prefCols.students[1].split('-').map(Number);
-            const col1 = c + 1;
-            if (col1 < cs || col1 > ce) return false;
-          }
-        } else if (layoutType === 'group') {
-          const curGroup = grid[r];
-          const notAdj = constraints.find(cons =>
-            cons.type === 'not_adjacent' &&
-            ((cons.students[0] === student && curGroup.includes(cons.students[1])) ||
-             (cons.students[1] === student && curGroup.includes(cons.students[0])))
-          );
-          if (notAdj) return false;
-
-          const diff = constraints.find(cons => cons.type === 'different_groups');
-          if (diff && diff.students.includes(student)) {
-            for (const ps of curGroup) if (diff.students.includes(ps)) return false;
-          }
-        }
-
-        return true;
-      }
-
-      function findStudentPos(studentName, grid, layoutType) {
-        if (layoutType === 'single_row') {
-          for (let r = 0; r < grid.length; r++) {
-            for (let c = 0; c < grid[0].length; c++) {
-              if (grid[r][c] === studentName) return { r, c };
-            }
-          }
-        } else if (layoutType === 'group') {
-          for (let r = 0; r < grid.length; r++) {
-            if (grid[r].includes(studentName)) return { r, c: null };
-          }
-        }
-        return null;
-      }
-
       // ---- 顯示（single_row：黑板 + 最右側走廊；不做重排）----
       function displaySeatingPlan(classroomData, numRowsOrGroups, numColsOrGroupSize, layoutType) {
         const container = document.getElementById('seating-plan');
@@ -434,12 +367,13 @@
         }
       }
 
-      // ---- 生成（single_row：逐席回溯，確保空位只在最後一列）----
-      function generateSeatingPlan() {
+      // ---- 啟動 Worker 進行求解 ----
+      async function generateSeatingPlan() {
+        if (solving) return;
+
         const students = parseStudentData();
         const layoutType = document.getElementById('layout-type').value;
 
-        let planData;
         let numRows, numCols, numGroups, groupSize;
 
         if (layoutType === 'single_row') {
@@ -453,48 +387,7 @@
             setStatusMessage(`座位不足！學生人數(${students.length})超過座位總數(${numRows * numCols})。`, 'error');
             return;
           }
-          planData = Array.from({ length: numRows }, () => Array(numCols).fill(null));
-
-          // 只指派前 N 個席位（row-major），確保前面不留空
-          const N = students.length;
-          const seatOrder = [];
-          for (let r = 0; r < numRows; r++) {
-            for (let c = 0; c < numCols; c++) {
-              if (seatOrder.length < N) seatOrder.push({ r, c });
-            }
-          }
-
-          const used = new Set();
-          const candidates = [...students].sort(() => Math.random() - 0.5);
-
-          const place = (idx) => {
-            if (idx === seatOrder.length) return true;
-            const { r, c } = seatOrder[idx];
-            for (let i = 0; i < candidates.length; i++) {
-              const s = candidates[i];
-              if (used.has(s)) continue;
-
-              planData[r][c] = s;
-              if (isPlacementValid(s, r, c, planData, 'single_row')) {
-                used.add(s);
-                if (place(idx + 1)) return true;
-                used.delete(s);
-              }
-              planData[r][c] = null;
-            }
-            return false;
-          };
-
-          if (place(0)) {
-            currentSeatingPlan = { students, plan: planData, layout: layoutType, numRows, numCols };
-            setStatusMessage('座位表成功生成！', 'success');
-            displaySeatingPlan(planData, numRows, numCols, 'single_row');
-          } else {
-            setStatusMessage('無法在限制條件下找到合適的座位安排。請調整限制或增加座位數。', 'error');
-            displaySeatingPlan(null, numRows, numCols, 'single_row');
-          }
-
-        } else if (layoutType === 'group') {
+        } else {
           numGroups = parseInt(document.getElementById('num-groups').value, 10);
           groupSize = parseInt(document.getElementById('group-size').value, 10);
           if (isNaN(numGroups) || isNaN(groupSize) || numGroups <= 0 || groupSize <= 0) {
@@ -505,32 +398,120 @@
             setStatusMessage(`座位不足！學生人數(${students.length})超過座位總數(${numGroups * groupSize})。`, 'error');
             return;
           }
-          planData = Array.from({ length: numGroups }, () => []);
+        }
 
-          const shuffled = [...students].sort(() => Math.random() - 0.5);
-          const solve = (idx) => {
-            if (idx === shuffled.length) return true;
-            const s = shuffled[idx];
-            const order = Array.from({ length: numGroups }, (_, i) => i).sort((a, b) => planData[a].length - planData[b].length);
-            for (const g of order) {
-              if (planData[g].length < groupSize && isPlacementValid(s, g, null, planData, 'group')) {
-                planData[g].push(s);
-                if (solve(idx + 1)) return true;
-                planData[g].pop();
-              }
-            }
-            return false;
-          };
+        const payload = {
+          type: 'solve',
+          layoutType,
+          students,
+          constraints,
+          numRows,
+          numCols,
+          numGroups,
+          groupSize,
+          heightConstraintEnabled: document.getElementById('height-constraint-enabled').checked,
+          timeLimitSec: Math.max(1, Math.min(60, parseInt(document.getElementById('time-limit').value, 10) || 3)),
+          heightMap: studentsWithHeightMap
+        };
 
-          if (solve(0)) {
-            currentSeatingPlan = { students, plan: planData, layout: layoutType, numGroups, groupSize };
+        // 啟動 worker
+        try {
+          solverWorker = new Worker('./solver.worker.js', { type: 'module' });
+        } catch (e) {
+          console.error(e);
+          setStatusMessage('無法啟動計算工作執行緒。請確認 solver.worker.js 與本頁同目錄。', 'error');
+          return;
+        }
+
+        const cancelBtn = document.getElementById('cancel-solve');
+        const genBtn = document.getElementById('generate-plan');
+
+        solving = true;
+        genBtn.disabled = true;
+        cancelBtn.classList.remove('hidden');
+        setStatusMessage(`搜尋中（上限 ${payload.timeLimitSec} 秒）…`, 'info');
+
+        solverWorker.onmessage = (e) => {
+          const msg = e.data;
+          if (msg.type === 'status') {
+            setStatusMessage(msg.message, 'info');
+          }
+          if (['result','timeout','cancelled','infeasible','no_solution','error'].includes(msg.type)) {
+            // 收尾
+            genBtn.disabled = false;
+            cancelBtn.classList.add('hidden');
+            solverWorker.terminate();
+            solverWorker = null;
+            solving = false;
+          }
+          if (msg.type === 'result') {
+            const { layoutType, planData, numRows, numCols, numGroups, groupSize } = msg;
             setStatusMessage('座位表成功生成！', 'success');
-            displaySeatingPlan(planData, numGroups, groupSize, 'group');
-          } else {
+            if (layoutType === 'single_row') {
+              currentSeatingPlan = { students, plan: planData, layout: layoutType, numRows, numCols };
+              displaySeatingPlan(planData, numRows, numCols, 'single_row');
+            } else {
+              currentSeatingPlan = { students, plan: planData, layout: layoutType, numGroups, groupSize };
+              displaySeatingPlan(planData, numGroups, groupSize, 'group');
+            }
+          } else if (msg.type === 'timeout') {
+            setStatusMessage('超過時間上限，未找到解。請放寬限制或延長時間上限。', 'error');
+            if (layoutType === 'single_row') displaySeatingPlan(null, payload.numRows, payload.numCols, 'single_row');
+            else displaySeatingPlan(null, payload.numGroups, payload.groupSize, 'group');
+          } else if (msg.type === 'cancelled') {
+            setStatusMessage('已停止。', 'info');
+            if (layoutType === 'single_row') displaySeatingPlan(null, payload.numRows, payload.numCols, 'single_row');
+            else displaySeatingPlan(null, payload.numGroups, payload.groupSize, 'group');
+          } else if (msg.type === 'infeasible') {
+            setStatusMessage(`無法生成：${msg.reason}`, 'error');
+          } else if (msg.type === 'no_solution') {
             setStatusMessage('無法在限制條件下找到合適的座位安排。請調整限制或增加座位數。', 'error');
-            displaySeatingPlan(null, numGroups, groupSize, 'group');
+            if (layoutType === 'single_row') displaySeatingPlan(null, payload.numRows, payload.numCols, 'single_row');
+            else displaySeatingPlan(null, payload.numGroups, payload.groupSize, 'group');
+          } else if (msg.type === 'error') {
+            setStatusMessage(`錯誤：${msg.message || '未知錯誤'}`, 'error');
+          }
+        };
+
+        solverWorker.onerror = (err) => {
+          console.error(err);
+          setStatusMessage('計算執行緒發生錯誤。', 'error');
+          genBtn.disabled = false;
+          cancelBtn.classList.add('hidden');
+          solverWorker.terminate();
+          solverWorker = null;
+          solving = false;
+        };
+
+        solverWorker.postMessage(payload);
+      }
+
+      // ---- 檢查限制（只有 group 用得到；single_row 由 worker 處理）----
+      function isPlacementValid(student, r, c, grid, layoutType) {
+        if (layoutType === 'group') {
+          const curGroup = grid[r];
+          const notAdj = constraints.find(cons =>
+            cons.type === 'not_adjacent' &&
+            ((cons.students[0] === student && curGroup.includes(cons.students[1])) ||
+             (cons.students[1] === student && curGroup.includes(cons.students[0])))
+          );
+          if (notAdj) return false;
+
+          const diff = constraints.find(cons => cons.type === 'different_groups');
+          if (diff && diff.students.includes(student)) {
+            for (const ps of curGroup) if (diff.students.includes(ps)) return false;
           }
         }
+        return true;
+      }
+
+      function findStudentPos(studentName, grid, layoutType) {
+        if (layoutType === 'group') {
+          for (let r = 0; r < grid.length; r++) {
+            if (grid[r].includes(studentName)) return { r, c: null };
+          }
+        }
+        return null;
       }
 
       // ---- 儲存 / 載入（Firebase 或 localStorage）----
@@ -617,7 +598,7 @@
       document.getElementById('save-plan').addEventListener('click', savePlan);
       document.getElementById('load-plan').addEventListener('click', loadPlan);
 
-      // 代理監聽刪除按鈕（因為 li 是動態渲染的）
+      // 代理監聽刪除按鈕
       document.getElementById('constraints-list').addEventListener('click', (e) => {
         const btn = e.target.closest('.btn-delete-constraint');
         if (!btn) return;
@@ -626,6 +607,13 @@
           constraints.splice(idx, 1);
           renderConstraintsList();
           setStatusMessage('已刪除一個限制。', 'info');
+        }
+      });
+
+      // 停止求解
+      document.getElementById('cancel-solve').addEventListener('click', () => {
+        if (solverWorker) {
+          solverWorker.postMessage({ type: 'cancel' });
         }
       });
 
